@@ -1,6 +1,6 @@
 use std::{
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
 };
 
@@ -13,7 +13,7 @@ struct Cli {
     #[arg(short, long)]
     key: String,
     #[arg(short, long, default_value_t = 0x200000)]
-    offset: u64,
+    offset: usize,
     inputs: Vec<PathBuf>,
 }
 
@@ -21,7 +21,7 @@ type Decryptor = cbc::Decryptor<aes::Aes128Dec>;
 
 type KeyIv = [u8; 0x10];
 
-fn generate_iv(base_iv: &KeyIv, offset: u64) -> KeyIv {
+fn generate_iv(base_iv: &KeyIv, offset: usize) -> KeyIv {
     base_iv
         .iter()
         .enumerate()
@@ -31,17 +31,11 @@ fn generate_iv(base_iv: &KeyIv, offset: u64) -> KeyIv {
         .unwrap()
 }
 
-fn decrypt(data: &Vec<u8>, key: &KeyIv, iv: &KeyIv) -> Vec<u8> {
-    let mut result = Vec::<u8>::new();
-    data.chunks(0x1000).enumerate().for_each(|(i, d)| {
-        let iv = generate_iv(iv, i as u64 * 0x1000);
-        let decryptor = Decryptor::new(key.into(), &iv.into());
-        let mut out = decryptor
-            .decrypt_padded_vec_mut::<NoPadding>(d)
-            .expect("cannot decrypt");
-        result.append(&mut out);
-    });
-    result
+fn decrypt_chunk(chunk: &[u8], key: &KeyIv, iv: &KeyIv) -> Vec<u8> {
+    let decryptor = Decryptor::new(key.into(), iv.into());
+    decryptor
+        .decrypt_padded_vec_mut::<NoPadding>(chunk)
+        .expect("cannot decrypt")
 }
 
 fn main() {
@@ -49,29 +43,23 @@ fn main() {
 
     cli.inputs.iter().for_each(|input| {
         println!("Decrypting {}...", input.display());
+
         let mut f = File::open(&input).expect("cannot open input file");
-        f.seek(SeekFrom::Start(cli.offset))
+        f.seek(SeekFrom::Start(cli.offset as u64))
             .expect("cannot skip offset");
-        let mut buf = Vec::<u8>::new();
-        f.read_to_end(&mut buf).expect("cannot read input file");
 
         let key: KeyIv = KeyIv::from_hex(&cli.key).expect("invalid key");
-
         let iv: KeyIv = [0u8; 0x10];
-        let out = decrypt(&buf, &key, &iv);
+
+        let mut buf_header = [0u8; 0x10];
+        f.read(&mut buf_header).expect("cannot read input file");
+        let out_header = decrypt_chunk(&buf_header, &key, &iv);
 
         let header: &[u8; 0x10] = match input.extension().and_then(|x| x.to_str()) {
             Some("opt") => include_bytes!("exfat.bin"),
             Some("app") => include_bytes!("ntfs.bin"),
             _ => panic!("unexpected file exension"),
         };
-        let out_header: [u8; 0x10] = out
-            .iter()
-            .take(0x10)
-            .cloned()
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
         let iv: KeyIv = header
             .iter()
             .zip(out_header)
@@ -79,7 +67,23 @@ fn main() {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        let out = decrypt(&buf, &key, &iv);
-        fs::write(input.with_extension("vhd"), &out).expect("cannot write to out file");
+
+        f.seek(SeekFrom::Current(-0x10))
+            .expect("cannot skip offset");
+        let mut of = File::create(input.with_extension("vhd")).expect("cannot create out file");
+
+        let mut buf = [0u8; 0x1000];
+        let mut offset = 0;
+        loop {
+            match f.read(&mut buf).expect("cannot read input file") {
+                0 => break,
+                n => {
+                    let iv: KeyIv = generate_iv(&iv, offset);
+                    of.write_all(&decrypt_chunk(&buf, &key, &iv))
+                        .expect("cannot write to output file");
+                    offset += n;
+                }
+            }
+        }
     });
 }
