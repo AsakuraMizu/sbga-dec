@@ -14,7 +14,7 @@ struct Cli {
     key: String,
     #[arg(short, long, default_value_t = 0x200000)]
     offset: u64,
-    input: PathBuf,
+    inputs: Vec<PathBuf>,
 }
 
 type Decryptor = cbc::Decryptor<aes::Aes128Dec>;
@@ -47,32 +47,39 @@ fn decrypt(data: &Vec<u8>, key: &KeyIv, iv: &KeyIv) -> Vec<u8> {
 fn main() {
     let cli = Cli::parse();
 
-    let mut f = File::open(&cli.input).expect("cannot open input file");
-    f.seek(SeekFrom::Start(cli.offset))
-        .expect("cannot skip offset");
-    let mut buf = Vec::<u8>::new();
-    f.read_to_end(&mut buf).expect("cannot read input file");
+    cli.inputs.iter().for_each(|input| {
+        println!("Decrypting {}...", input.display());
+        let mut f = File::open(&input).expect("cannot open input file");
+        f.seek(SeekFrom::Start(cli.offset))
+            .expect("cannot skip offset");
+        let mut buf = Vec::<u8>::new();
+        f.read_to_end(&mut buf).expect("cannot read input file");
 
-    let key: KeyIv = KeyIv::from_hex(cli.key).expect("invalid key");
+        let key: KeyIv = KeyIv::from_hex(&cli.key).expect("invalid key");
 
-    let iv: KeyIv = [0u8; 0x10];
-    let out = decrypt(&buf, &key, &iv);
+        let iv: KeyIv = [0u8; 0x10];
+        let out = decrypt(&buf, &key, &iv);
 
-    let exfat_header: &[u8; 0x10] = include_bytes!("exfat.bin");
-    let out_header: [u8; 0x10] = out
-        .iter()
-        .take(0x10)
-        .cloned()
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
-    let iv: KeyIv = exfat_header
-        .iter()
-        .zip(out_header)
-        .map(|(a, b)| a ^ b)
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
-    let out = decrypt(&buf, &key, &iv);
-    fs::write(cli.input.with_extension("vhd"), &out).expect("cannot write to out file");
+        let header: &[u8; 0x10] = match input.extension().and_then(|x| x.to_str()) {
+            Some("opt") => include_bytes!("exfat.bin"),
+            Some("app") => include_bytes!("ntfs.bin"),
+            _ => panic!("unexpected file exension"),
+        };
+        let out_header: [u8; 0x10] = out
+            .iter()
+            .take(0x10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let iv: KeyIv = header
+            .iter()
+            .zip(out_header)
+            .map(|(a, b)| a ^ b)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let out = decrypt(&buf, &key, &iv);
+        fs::write(input.with_extension("vhd"), &out).expect("cannot write to out file");
+    });
 }
