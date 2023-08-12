@@ -1,0 +1,14 @@
+[package]
+name = "sbga-dec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aes = "0.8.3"
+cbc = { version = "0.1.2", features = ["alloc"] }
+clap = { version = "4.3.21", features = ["derive"] }
+hex = "0.4.3"
+
+[profile.release]
+strip = true
+lto = true
