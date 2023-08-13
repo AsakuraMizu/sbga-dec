@@ -7,6 +7,7 @@ edition = "2021"
 aes = "0.8.3"
 cbc = { version = "0.1.2", features = ["alloc"] }
 clap = { version = "4.3.21", features = ["derive"] }
+glob = "0.3.1"
 hex = "0.4.3"
 
 [profile.release]

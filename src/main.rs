@@ -1,11 +1,11 @@
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    path::PathBuf,
 };
 
 use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
 use clap::Parser;
+use glob::glob;
 use hex::FromHex;
 
 #[derive(Debug, Parser)]
@@ -14,7 +14,7 @@ struct Cli {
     key: String,
     #[arg(short, long, default_value_t = 0x200000)]
     offset: usize,
-    inputs: Vec<PathBuf>,
+    inputs: Vec<String>,
 }
 
 type Decryptor = cbc::Decryptor<aes::Aes128Dec>;
@@ -41,7 +41,14 @@ fn decrypt_chunk(chunk: &[u8], key: &KeyIv, iv: &KeyIv) -> Vec<u8> {
 fn main() {
     let cli = Cli::parse();
 
-    cli.inputs.iter().for_each(|input| {
+    let files = cli
+        .inputs
+        .iter()
+        .flat_map(|input| glob(input).expect(&format!("cannot read glob pattern: {}", input)))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("cannot list files");
+
+    files.iter().for_each(|input| {
         println!("Decrypting {}...", input.display());
 
         let mut f = File::open(&input).expect("cannot open input file");
