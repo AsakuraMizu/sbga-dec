@@ -120,6 +120,7 @@ fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
+    println!("Calculated iv={}", iv.encode_hex());
 
     let out_file = out_file.unwrap_or_else(|| file.with_extension("vhd"));
     let mut of = File::create(&out_file)?;
