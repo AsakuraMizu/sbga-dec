@@ -1,14 +1,19 @@
 [package]
 name = "sbga-dec"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "Advanced sega hdd decryptor, written in rust"
+authors = ["AsakuraMizu"]
+readme = "README.md"
 
 [dependencies]
-aes = "0.8.3"
+aes = "0.8.4"
+anyhow = "1.0.81"
 cbc = { version = "0.1.2", features = ["alloc"] }
-clap = { version = "4.3.21", features = ["derive"] }
-glob = "0.3.1"
-hex = "0.4.3"
+clap = { version = "4.5.4", features = ["derive"] }
+const-hex = "1.11.3"
+hex-literal = "0.4.1"
+indicatif = "0.17.8"
 
 [profile.release]
 strip = true
