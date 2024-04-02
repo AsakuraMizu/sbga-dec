@@ -4,8 +4,8 @@ use std::{
     path::PathBuf,
 };
 
-use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
-use anyhow::anyhow;
+use cbc::cipher;
+use cipher::{BlockDecryptMut, KeyIvInit, inout::InOutBuf};
 use clap::{Parser, ValueEnum};
 use const_hex::{FromHex, FromHexError, ToHexExt};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -14,12 +14,10 @@ use crate::presets::Preset;
 
 mod presets;
 
-type Decryptor = cbc::Decryptor<aes::Aes128Dec>;
+type KeyOrIv = [u8; 0x10];
 
-type KeyIv = [u8; 0x10];
-
-fn key_parser(s: &str) -> Result<KeyIv, FromHexError> {
-    KeyIv::from_hex(s)
+fn key_parser(s: &str) -> Result<KeyOrIv, FromHexError> {
+    KeyOrIv::from_hex(s)
 }
 
 #[derive(Debug, Parser)]
@@ -27,7 +25,7 @@ fn key_parser(s: &str) -> Result<KeyIv, FromHexError> {
 struct Cli {
     /// 16-digit hex string
     #[arg(short, long, group = "mode", requires = "fs", value_parser = key_parser)]
-    key: Option<KeyIv>,
+    key: Option<KeyOrIv>,
 
     /// Set fs type to exfat
     #[arg(long, requires = "key", group = "fs")]
@@ -53,21 +51,10 @@ struct Cli {
     out_file: Option<PathBuf>,
 }
 
-fn generate_iv(base_iv: &KeyIv, offset: usize) -> KeyIv {
-    base_iv
-        .iter()
-        .enumerate()
-        .map(|(i, x)| x ^ ((offset >> ((i % 8) << 3)) as u8))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap()
-}
-
-fn decrypt_chunk(chunk: &[u8], key: &KeyIv, iv: &KeyIv) -> Vec<u8> {
-    let decryptor = Decryptor::new(key.into(), iv.into());
-    decryptor
-        .decrypt_padded_vec_mut::<NoPadding>(chunk)
-        .expect("cannot decrypt")
+fn decrypt_chunk_mut(chunk: &mut [u8], key: &KeyOrIv, iv: &KeyOrIv) {
+    let mut decryptor = cbc::Decryptor::<aes::Aes128Dec>::new(key.into(), iv.into());
+    let (blocks, _) = InOutBuf::from(chunk).into_chunks();
+    decryptor.decrypt_blocks_inout_mut(blocks);
 }
 
 fn main() -> anyhow::Result<()> {
@@ -107,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         );
         preset
     } else {
-        return Err(anyhow!(
+        return Err(anyhow::anyhow!(
             "Unknown game / file extension, please specify a preset or key and file system type"
         ));
     };
@@ -120,15 +107,15 @@ fn main() -> anyhow::Result<()> {
     let mut f = File::open(&file)?;
     f.seek(SeekFrom::Start(offset as u64))?;
 
-    let iv: KeyIv = [0u8; 0x10];
+    let iv: KeyOrIv = [0u8; 0x10];
 
     let mut buf_header = [0u8; 0x10];
     f.read_exact(&mut buf_header)?;
-    let out_header = decrypt_chunk(&buf_header, &key, &iv);
+    decrypt_chunk_mut(&mut buf_header, &key, &iv);
 
-    let iv: KeyIv = header
+    let iv: KeyOrIv = header
         .iter()
-        .zip(out_header)
+        .zip(buf_header)
         .map(|(a, b)| a ^ b)
         .collect::<Vec<_>>()
         .try_into()
@@ -141,20 +128,24 @@ fn main() -> anyhow::Result<()> {
     let pb = ProgressBar::new(f.metadata().unwrap().len() - offset as u64);
     pb.set_style(
         ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec} ({eta})",
         )
         .unwrap()
         .progress_chars("#>-"),
     );
 
     let mut buf = [0u8; 0x1000];
+    let mut buf_iv = [0u8; 0x10];
     let mut offset = 0;
     loop {
         match f.read(&mut buf)? {
             0 => break,
             n => {
-                let iv: KeyIv = generate_iv(&iv, offset);
-                of.write_all(&decrypt_chunk(&buf, &key, &iv))?;
+                for i in 0..16 {
+                    buf_iv[i] = iv[i] ^ ((offset >> ((i % 8) << 3)) as u8);
+                }
+                decrypt_chunk_mut(&mut buf, &key, &buf_iv);
+                of.write_all(&buf)?;
                 offset += n;
                 pb.set_position(offset as u64);
             }

@@ -9,7 +9,7 @@ readme = "README.md"
 [dependencies]
 aes = "0.8.4"
 anyhow = "1.0.81"
-cbc = { version = "0.1.2", features = ["alloc"] }
+cbc = { version = "0.1.2", default-features = false }
 clap = { version = "4.5.4", features = ["derive"] }
 const-hex = "1.11.3"
 hex-literal = "0.4.1"

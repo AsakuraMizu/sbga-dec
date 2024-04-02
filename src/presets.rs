@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use hex_literal::hex;
 
-use crate::KeyIv;
+use crate::KeyOrIv;
 
 macro_rules! generate_presets {
     ( $( $id:ident $key:literal )* ) => {
@@ -10,10 +10,10 @@ macro_rules! generate_presets {
         pub enum Preset {
             $($id,)*
             #[value(skip)]
-            Custom { key: KeyIv, exfat: bool },
+            Custom { key: KeyOrIv, exfat: bool },
         }
         impl Preset {
-            pub fn key(&self) -> KeyIv {
+            pub fn key(&self) -> KeyOrIv {
                 match self {
                     $(Self::$id => hex!($key),)*
                     Self::Custom { key, .. } => *key,
