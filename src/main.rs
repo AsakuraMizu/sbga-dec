@@ -1,11 +1,13 @@
 use std::{
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::PathBuf,
+    sync::mpsc::channel,
+    thread::spawn,
 };
 
 use cbc::cipher;
-use cipher::{BlockDecryptMut, KeyIvInit, inout::InOutBuf};
+use cipher::{inout::InOutBuf, BlockDecryptMut, KeyIvInit};
 use clap::{Parser, ValueEnum};
 use const_hex::{FromHex, FromHexError, ToHexExt};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -41,7 +43,7 @@ struct Cli {
 
     /// Skip first n bytes
     #[arg(long, default_value_t = 0x200000)]
-    offset: usize,
+    offset: u64,
 
     /// File to decrypt
     file: PathBuf,
@@ -51,9 +53,9 @@ struct Cli {
     out_file: Option<PathBuf>,
 }
 
-fn decrypt_chunk_mut(chunk: &mut [u8], key: &KeyOrIv, iv: &KeyOrIv) {
+fn decrypt_chunk_mut(buf: &mut [u8], key: &KeyOrIv, iv: &KeyOrIv) {
     let mut decryptor = cbc::Decryptor::<aes::Aes128Dec>::new(key.into(), iv.into());
-    let (blocks, _) = InOutBuf::from(chunk).into_chunks();
+    let (blocks, _) = InOutBuf::from(buf).into_chunks();
     decryptor.decrypt_blocks_inout_mut(blocks);
 }
 
@@ -105,13 +107,14 @@ fn main() -> anyhow::Result<()> {
     println!("Decrypting {}...", file.display());
 
     let mut f = File::open(&file)?;
-    f.seek(SeekFrom::Start(offset as u64))?;
+    f.seek(SeekFrom::Start(offset))?;
 
     let iv: KeyOrIv = [0u8; 0x10];
 
     let mut buf_header = [0u8; 0x10];
     f.read_exact(&mut buf_header)?;
     decrypt_chunk_mut(&mut buf_header, &key, &iv);
+    f.seek(SeekFrom::Current(-0x10))?;
 
     let iv: KeyOrIv = header
         .iter()
@@ -123,36 +126,44 @@ fn main() -> anyhow::Result<()> {
     println!("Calculated iv={}", iv.encode_hex());
 
     let out_file = out_file.unwrap_or_else(|| file.with_extension("vhd"));
-    let mut of = File::create(&out_file)?;
-    f.seek(SeekFrom::Current(-0x10))?;
+    let of = File::create(&out_file)?;
 
-    let pb = ProgressBar::new(f.metadata().unwrap().len() - offset as u64);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec} ({eta})",
-        )
-        .unwrap()
-        .progress_chars("#>-"),
+    let pb = ProgressBar::new(f.metadata().unwrap().len() - offset).with_style(
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"),
     );
 
+    let (tx, rx) = channel::<[u8; 0x1000]>();
+    let handle = spawn(move || -> anyhow::Result<()> {
+        let mut writer = BufWriter::new(of);
+        for buf in rx {
+            writer.write_all(&buf)?;
+        }
+        Ok(())
+    });
+
+    let mut reader = BufReader::new(f);
     let mut buf = [0u8; 0x1000];
-    let mut buf_iv = [0u8; 0x10];
+    let mut local_iv = [0u8; 0x10];
     let mut offset = 0;
     loop {
-        match f.read(&mut buf)? {
+        match reader.read(&mut buf)? {
             0 => break,
             n => {
                 for i in 0..16 {
-                    buf_iv[i] = iv[i] ^ ((offset >> ((i % 8) << 3)) as u8);
+                    local_iv[i] = iv[i] ^ ((offset >> ((i % 8) << 3)) as u8);
                 }
-                decrypt_chunk_mut(&mut buf, &key, &buf_iv);
-                of.write_all(&buf)?;
+                decrypt_chunk_mut(&mut buf, &key, &local_iv);
+                tx.send(buf)?;
                 offset += n;
                 pb.set_position(offset as u64);
             }
         }
     }
 
+    drop(tx);
+    handle.join().unwrap()?;
     pb.finish();
     println!("Decrypt finished, save to {}", out_file.display());
     Ok(())
